@@ -1,0 +1,284 @@
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portofolio Saham Saya</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0b1220; color: #edf2ff;
+    font-family: Arial, sans-serif; padding: 24px;
+  }
+  main { max-width: 900px; margin: auto; }
+  h1 { margin-bottom: 5px; }
+  .muted { color: #98a8c5; font-size: 13px; }
+  .panel {
+    background: #151f32; border: 1px solid #2a3851;
+    border-radius: 15px; padding: 20px; margin: 16px 0;
+  }
+  .grid {
+    display: grid; grid-template-columns: repeat(2,minmax(0,1fr));
+    gap: 14px;
+  }
+  .big { font-size: clamp(22px,4vw,34px); font-weight: 700; margin: 12px 0; }
+  .green { color: #4adea1; }
+  .red { color: #fb7185; }
+  .stock-head, .stock-row {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 10px; align-items: center;
+  }
+  .stock-row { padding: 15px 0; border-top: 1px solid #2a3851; }
+  .right { text-align: right; }
+  input, button {
+    padding: 12px; width: 100%; border-radius: 8px;
+    margin-top: 8px; font-size: 15px;
+  }
+  input {
+    background: #0b1220; color: white;
+    border: 1px solid #394963;
+  }
+  button {
+    background: #6d86ff; border: 0; color: white;
+    font-weight: bold; cursor: pointer;
+  }
+  .secondary { background: #293750; }
+  @media(max-width: 560px) {
+    body { padding: 12px; }
+    .grid { grid-template-columns: 1fr; }
+    .panel { padding: 15px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>📈 Portofolio Saham Saya</h1>
+  <p class="muted">PLTR · MU | Semua nilai portofolio dalam IDR</p>
+
+  <div class="grid">
+    <section class="panel">
+      <div class="muted">Nilai posisi yang dimasukkan</div>
+      <div class="big" id="total">Rp0</div>
+      <div class="muted">Perubahan harian (estimasi)</div>
+      <div class="big" id="daily">—</div>
+      <div id="dailyPct">Menunggu data saham...</div>
+    </section>
+    <section class="panel">
+      <div class="muted">Estimasi nilai kemarin</div>
+      <div class="big" id="yesterday">—</div>
+      <div class="muted">Kurs USD/IDR</div>
+      <h2 id="fx">Memuat...</h2>
+      <div class="muted" id="updated">Belum diperbarui</div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <h2>Posisi saham</h2>
+    <div id="stocks">Memuat data...</div>
+  </section>
+
+  <section class="panel">
+    <h2>Pengaturan</h2>
+    <label class="muted" for="token">Finnhub API token</label>
+    <input id="token" type="password" placeholder="Masukkan API token">
+    <label class="muted" for="pltr">Nilai posisi PLTR dalam rupiah</label>
+    <input id="pltr" type="number" value="41540507" min="0">
+    <label class="muted" for="mu">Nilai posisi MU dalam rupiah</label>
+    <input id="mu" type="number" value="9584553" min="0">
+    <button id="save">Simpan pengaturan & perbarui</button>
+    <button class="secondary" id="refresh">Perbarui harga sekarang</button>
+    <p class="muted" id="status">
+      Nilai posisi diperlakukan sebagai nilai pasar saat ini.
+    </p>
+  </section>
+
+  <p class="muted">
+    Estimasi perubahan harian bukan laba terealisasi.
+    Belum memperhitungkan biaya transaksi, pajak, atau spread kurs.
+    API token di browser hanya cocok untuk penggunaan pribadi.
+  </p>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+
+const money = n => new Intl.NumberFormat("id-ID", {
+  style: "currency",
+  currency: "IDR",
+  maximumFractionDigits: 0
+}).format(n);
+
+const usd = n => new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD"
+}).format(n);
+
+let positions = [
+  { symbol: "PLTR", amount: 41540507 },
+  { symbol: "MU", amount: 9584553 }
+];
+
+let quotes = {};
+let exchangeRate = null;
+let busy = false;
+
+function classFor(n) {
+  return n >= 0 ? "green" : "red";
+}
+
+function render() {
+  const total = positions.reduce((s, p) => s + p.amount, 0);
+  $("total").textContent = money(total);
+
+  let daily = 0;
+  let allLoaded = positions.every(p => {
+    const q = quotes[p.symbol];
+    return q && Number.isFinite(q.c) && q.c > 0 &&
+      Number.isFinite(q.d);
+  });
+
+  $("stocks").replaceChildren();
+
+  for (const p of positions) {
+    const q = quotes[p.symbol];
+    const row = document.createElement("div");
+    row.className = "stock-row";
+
+    const left = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = p.symbol;
+    const amount = document.createElement("div");
+    amount.className = "muted";
+    amount.textContent = money(p.amount);
+    left.append(name, amount);
+
+    const right = document.createElement("div");
+    right.className = "right";
+
+    const price = document.createElement("strong");
+    const change = document.createElement("div");
+
+    if (q && q.c > 0 && Number.isFinite(q.d)) {
+      // d = perubahan harga USD terhadap penutupan sebelumnya.
+      // amount diasumsikan nilai pasar posisi saat ini.
+      const pnl = p.amount * q.d / q.c;
+      daily += pnl;
+
+      price.textContent = usd(q.c);
+      change.className = classFor(pnl);
+      change.textContent =
+        `${pnl >= 0 ? "+" : ""}${money(pnl)} (${q.dp.toFixed(2)}%) hari ini`;
+    } else {
+      price.textContent = "Harga belum tersedia";
+      change.textContent = "Periksa API token / akses data";
+      change.className = "muted";
+    }
+
+    right.append(price, change);
+    row.append(left, right);
+    $("stocks").append(row);
+  }
+
+  if (allLoaded) {
+    $("daily").textContent = (daily >= 0 ? "+" : "") + money(daily);
+    $("daily").className = "big " + classFor(daily);
+    $("dailyPct").textContent =
+      `Perubahan posisi: ${(daily / total * 100).toFixed(2)}%`;
+    $("yesterday").textContent = money(total - daily);
+  } else {
+    $("daily").textContent = "—";
+    $("daily").className = "big";
+    $("dailyPct").textContent = "Menunggu kuotasi kedua saham";
+    $("yesterday").textContent = "—";
+  }
+
+  $("fx").textContent = exchangeRate
+    ? "1 USD = " + money(exchangeRate)
+    : "Kurs belum tersedia";
+}
+
+async function updateDashboard() {
+  if (busy) return;
+  busy = true;
+  $("refresh").disabled = true;
+  $("status").textContent = "Mengambil data terbaru...";
+
+  try {
+    const token = $("token").value.trim();
+    if (!token) throw new Error("Masukkan Finnhub API token.");
+
+    positions = [
+      { symbol: "PLTR", amount: Number($("pltr").value) },
+      { symbol: "MU", amount: Number($("mu").value) }
+    ];
+
+    if (positions.some(p =>
+      !Number.isFinite(p.amount) || p.amount < 0
+    )) {
+      throw new Error("Nilai posisi tidak valid.");
+    }
+
+    const results = await Promise.all(positions.map(async p => {
+      const url = new URL("https://finnhub.io/api/v1/quote");
+      url.searchParams.set("symbol", p.symbol);
+      const response = await fetch(url, {
+        headers: { "X-Finnhub-Token": token }
+      });
+
+      if (!response.ok) {
+        throw new Error("Finnhub HTTP " + response.status);
+      }
+
+      const q = await response.json();
+      if (!(q.c > 0) || !(q.pc > 0) ||
+          !Number.isFinite(q.d) || !Number.isFinite(q.dp)) {
+        throw new Error("Kuotasi " + p.symbol + " tidak valid.");
+      }
+
+      return [p.symbol, q];
+    }));
+
+    quotes = Object.fromEntries(results);
+
+    const fxResponse = await fetch(
+      "https://open.er-api.com/v6/latest/USD"
+    );
+    if (!fxResponse.ok) throw new Error("Kurs gagal dimuat.");
+
+    const fxData = await fxResponse.json();
+    if (fxData.result !== "success" ||
+        !(fxData.rates.IDR > 0)) {
+      throw new Error("Kurs USD/IDR tidak tersedia.");
+    }
+
+    exchangeRate = fxData.rates.IDR;
+    render();
+
+    $("updated").textContent =
+      "Diperbarui: " + new Date().toLocaleString("id-ID");
+    $("status").textContent =
+      "Data berhasil dimuat. Pembaruan otomatis tiap 60 detik.";
+  } catch (err) {
+    $("status").textContent =
+      "Gagal: " + err.message +
+      " Pastikan token, koneksi, dan akses API benar.";
+    render();
+  } finally {
+    busy = false;
+    $("refresh").disabled = false;
+  }
+}
+
+$("save").addEventListener("click", updateDashboard);
+$("refresh").addEventListener("click", updateDashboard);
+
+render();
+
+// Polling berkala, bukan streaming tick-by-tick.
+setInterval(() => {
+  if ($("token").value.trim()) updateDashboard();
+}, 60000);
+</script>
+</body>
+</html>
